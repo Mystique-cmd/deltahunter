@@ -32,6 +32,18 @@ import os
 import re
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+# Exported for reuse by enumerate_site.py
+__all__ = [
+    "CandidateEndpoint",
+    "classify_by_method",
+    "detect_payload",
+    "detect_path_keywords",
+    "detect_response_change",
+    "score_event",
+    "group_workflows",
+    "format_candidate",
+]
 from urllib.parse import urlparse
 
 
@@ -448,4 +460,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

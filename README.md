@@ -114,3 +114,26 @@ The script prints two main sections:
 - Python 3.x
 - Standard library only (no external dependencies)
 
+## Dynamic site enumeration (new)
+
+This repo now also includes `enumerate_site.py`, which **actively crawls/enumerates a site** using a headless browser (Playwright) and ranks discovered endpoints using the same heuristics as `todo_analyzer.py`.
+
+### Install Playwright
+
+```bash
+pip install playwright
+playwright install
+```
+
+### Run
+
+```bash
+python3 enumerate_site.py --base https://example.com --max-pages 30 --max-depth 3
+```
+
+### Notes
+
+- Default behavior is **same-origin only** when ranking endpoints.
+- You must have authorization to test the target.
+
+
