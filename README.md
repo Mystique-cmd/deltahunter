@@ -1,124 +1,133 @@
-# DeltaHunter Todo Analyzer
+# DeltaHunter
 
-`todo_analyzer.py` is a lightweight prototype that scans JSON HTTP traffic logs and identifies endpoints that are *likely state-changing* (useful as candidates for race-condition / workflow testing).
+Small, heuristic Python tools for analyzing HTTP traffic and prioritizing **likely state-changing** endpoints for security testing workflows (e.g., race-condition / multi-step flow exploration).
 
-It applies defensive heuristics (method/path/body/response signals), assigns a confidence score, filters candidates, and also groups them into likely multi-step workflows.
+This repository contains two scripts:
 
-## What it does
+- **`todo_analyzer.py`**: Reads JSON HTTP event logs and ranks candidates using heuristic signals.
+- **`enumerate_site.py`**: Crawls a site with Playwright, captures network traffic, then reuses the same heuristics to rank endpoints.
 
-For each event in your input log, the script extracts:
+> ⚠️ Use only with explicit authorization against systems you are permitted to test. These tools are not a guarantee of correctness—results are best used for prioritization.
 
-- **HTTP method** (`method`)
-- **Endpoint path** (`path` or derived from `url`)
-- **Request body** (`request_body`, `body`, `payload`, etc.)
-- **Response status/body** (`response.status`, `status_code`, `response.body`, etc.)
+---
 
-Then it uses these heuristic signals:
+## What `todo_analyzer.py` does
 
-1. **State-changing HTTP verbs**
-   - Treats `POST`, `PUT`, `PATCH`, `DELETE` as strong candidates.
+`todo_analyzer.py` parses JSON “events” and scores each event for how likely it is to be **state-changing** based on:
 
-2. **Path keyword matches** (examples)
-   - `update`, `create`, `delete`, `redeem`, `checkout`, `apply`, `confirm`, etc.
+- HTTP method (strong signals): `POST`, `PUT`, `PATCH`, `DELETE`
+- Path keywords (examples): `update`, `create`, `delete`, `redeem`, `checkout`, `apply`, `confirm`
+- Request body hints (examples): `amount`, `balance`, `coupon`, `user_id`, `inventory`, `stock`, `quantity`
+- Response change indicators (examples): `created`, `updated`, `deleted`, `new_id`, `resource_id`, `increment`, `decrement`, `balance`, `inventory`
 
-3. **Request body field hints** (examples)
-   - `amount`, `balance`, `coupon`, `user_id`, `inventory`, `stock`, `quantity`, etc.
+It then:
 
-4. **Response change indicators** (examples)
-   - `created`, `updated`, `deleted`, `new_id`, `resource_id`, `increment`, `decrement`, `inventory`, `balance`, etc.
+1. marks candidates as `state_changing == True`
+2. applies a confidence filter: `confidence >= 0.45`
+3. prints ranked candidates and groups them into likely workflows.
 
-### Confidence + filtering
+---
 
-Each matching category contributes to a **confidence** score. The script marks an event as *state-changing* when:
+## How it works (inputs & schema)
 
-- It matches state-changing verbs / path keywords / payload hints **and**
-- It also shows response-change signals (or a successful response status signal).
+The scripts are designed to be defensive: log formats vary, so keys are matched flexibly.
 
-Finally it filters to:
+### Supported input for `todo_analyzer.py`
 
-- `state_changing == True`
-- `confidence >= 0.45`
+The input JSON can be either:
 
-## Supported input format
-
-The script accepts JSON traffic logs in either of these shapes:
-
-1. **A JSON array** of events
+1) **A JSON array** of events
 
 ```json
 [
-  { "method": "POST", "url": "https://example.com/redeem", "body": {"coupon":"X"}, "response": {"status":200,"body":"created new_id"} }
+  {
+    "method": "POST",
+    "url": "https://example.com/redeem",
+    "body": {"coupon": "X"},
+    "response": {"status": 200, "body": "created new_id"}
+  }
 ]
 ```
 
-2. **A JSON object** with an `events` array
+2) **A JSON object** containing an `events` array
 
 ```json
 {
   "events": [
-    { "method": "POST", "path": "/redeem-coupon", "request_body": {"coupon":"X"}, "response_status": 200, "response_body": {"body":"created"} }
+    {
+      "method": "POST",
+      "path": "/redeem-coupon",
+      "request_body": {"coupon": "X"},
+      "response_status": 200,
+      "response_body": {"body": "created"}
+    }
   ]
 }
 ```
 
-### Flexible schema fields
+### Flexible field names (common variants)
 
-Because log formats vary, the parser tries multiple alternative keys, for example:
+`todo_analyzer.py` tries multiple keys, such as:
 
-- Path: `path` (preferred) or derived from `url`
-- Request body: `request_body`, `body`, `requestBody`, `request`, `payload`
-- Response body: `response.body`, `responseBody`, `response_body`, etc.
-- Response status: `response.status`, `status_code`, `status`
+- **Method**: `method`
+- **Path**: `path` (preferred) or derived from `url`
+- **Request body**: `request_body`, `body`, `requestBody`, `request`, `payload`
+- **Response status**: `response.status` or `response_status`, `status`, `status_code`
+- **Response body**: `response.body` or variants like `response_body` / `responseBody`
+
+---
 
 ## Usage
 
-### Basic
+### `todo_analyzer.py`
+
+Basic:
 
 ```bash
 python3 todo_analyzer.py --input /path/to/log.json
 ```
 
-### Limit output
+Limit output:
 
 ```bash
 python3 todo_analyzer.py --input /path/to/log.json --top 30
 ```
 
-## Output
+CLI flags:
+
+- `--input` (required): path to the JSON traffic log
+- `--top` (default: `30`): max candidates to print
+
+---
+
+### Output (for `todo_analyzer.py`)
 
 The script prints two main sections:
 
 1. **Candidate state-changing endpoints**
-   - Shows method + path (+ URL when available)
-   - Shows confidence score
-   - Lists heuristic reasons
+   - Each entry shows: `METHOD PATH (url=...)`, confidence score, and heuristic reasons.
 
 2. **Workflow grouping**
-   - Groups candidates into likely multi-step flows using path keywords.
-   - Example workflow keys used by the script:
+   - Candidates are grouped into heuristic workflow “keys” based on path keywords.
+   - Example workflow keys used by the script include:
      - `validate→confirm→redeem`
      - `checkout→inventory_update`
      - `create_or_register`
      - `delete_or_remove`
      - `unassigned`
 
-## Notes / limitations
+---
 
-- This is **heuristic** logic, not a ground-truth state-machine model.
-- It is designed to be **defensive** against inconsistent/malformed logs.
-- Confidence is intended for **prioritization**, not definitive correctness.
-- Response-body extraction depends on how your events represent response content.
+## Dynamic site enumeration with `enumerate_site.py`
 
-## Requirements
+`enumerate_site.py` crawls pages using Playwright (to capture JS-driven navigation/XHR), listens for network requests/responses, converts captured traffic into the event schema expected by `todo_analyzer.py`, and prints ranked candidates + workflow grouping.
+
+### Requirements
 
 - Python 3.x
-- Standard library only (no external dependencies)
+- Playwright
 
-## Dynamic site enumeration (new)
-
-This repo now also includes `enumerate_site.py`, which **actively crawls/enumerates a site** using a headless browser (Playwright) and ranks discovered endpoints using the same heuristics as `todo_analyzer.py`.
-
-### Install Playwright
+Install Playwright:
 
 ```bash
 pip install playwright
@@ -131,9 +140,44 @@ playwright install
 python3 enumerate_site.py --base https://example.com --max-pages 30 --max-depth 3
 ```
 
-### Notes
+CLI flags:
 
-- Default behavior is **same-origin only** when ranking endpoints.
-- You must have authorization to test the target.
+- `--base` (required): base URL to start crawling from
+- `--max-pages` (default: `30`): upper bound on visited pages
+- `--max-depth` (default: `3`): maximum crawl depth (relative to the starting page)
+- `--wait-ms` (default: `1200`): wait time after navigation for JS/XHR to fire
+- `--headless` (default: headed): run browser headlessly
+- `--cross-origin` (default: same-origin only): allow crawling outside the base origin
+- `--rate-limit-delay` (default: `0.0`): optional delay between navigations (seconds)
+- `--top` (default: `30`): max ranked candidates to print
 
+### Notes / limitations (enumeration)
+
+- By default, it applies **same-origin only** filtering for endpoint ranking.
+- Response body capture is best-effort and truncated to a maximum size (the script reads up to ~5000 characters).
+- Request body association is also best-effort; mismatches can occur when requests/responses don’t pair cleanly in the log stream.
+
+---
+
+## Heuristics & limitations (important)
+
+- This is **heuristic** scoring, not a ground-truth state-machine model.
+- It helps prioritize endpoints for further manual verification.
+- Log formats vary widely; extraction depends on the available fields (method/path/body/response signals).
+
+---
+
+## Project structure
+
+- `todo_analyzer.py`: JSON parser + scoring + workflow grouping
+- `enumerate_site.py`: Playwright-based crawling + network capture, then reuse scoring/grouping
+- `virtualenvironment/`: local virtual environment (repo-local; optional for users)
+
+---
+
+## Safety & ethics
+
+Operate only on systems where you have explicit authorization.
+
+These scripts may produce false positives and should never be treated as definitive proof of behavior.
 
