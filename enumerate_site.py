@@ -95,14 +95,14 @@ async def _crawl(
 
         async def handle_request(req):
             # Capture request details. We'll attach response later in handle_response.
-            rid = req._impl_obj._requestId if hasattr(req, "_impl_obj") else None
-            # We shouldn't rely on internals; use an URL + method key instead.
-            # We'll store by (method,url) with a list.
+            # NOTE: Avoid Playwright internal fields (e.g. req._impl_obj._requestId)
+            # because they vary across Playwright versions.
             try:
                 url = req.url
                 method = req.method
                 post_data = req.post_data
                 ct = req.headers.get("content-type", "")
+
 
                 key = f"{method} {url}"
                 body_obj: Any = None
