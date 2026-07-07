@@ -27,9 +27,11 @@ Because logs vary widely, the detection logic is defensive and uses heuristics.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -43,6 +45,9 @@ __all__ = [
     "score_event",
     "group_workflows",
     "format_candidate",
+    "generate_text_report",
+    "generate_json_report",
+    "generate_csv_report",
 ]
 from urllib.parse import urlparse
 
@@ -415,10 +420,81 @@ def reasons_cleanup(reasons: List[str]) -> List[str]:
     return dedup
 
 
+def generate_text_report(filtered: List[CandidateEndpoint], top: int, visited_urls: Optional[List[str]] = None) -> str:
+    lines = []
+    if visited_urls is not None:
+        lines.append("=== Enumerated URLs (crawl order) ===")
+        for u in visited_urls:
+            lines.append(u)
+        lines.append("")
+
+    header = "=== Candidate state-changing endpoints (ranked) ===" if visited_urls is not None else "=== Candidate state-changing endpoints (race-condition candidates) ==="
+    lines.append(header)
+    for c in filtered[:top]:
+        lines.append(format_candidate(c))
+        lines.append("")
+
+    workflow_map = group_workflows(filtered)
+    lines.append("=== Workflow grouping ===")
+    for wf_key, wf_candidates in workflow_map.items():
+        if not wf_candidates:
+            continue
+        # Highlight only workflows with at least 2 distinct steps
+        steps = {c.workflow_step for c in wf_candidates}
+        if wf_key == "unassigned" and len(wf_candidates) < 2:
+            continue
+
+        lines.append(f"\n[{wf_key}] ({len(wf_candidates)} candidates; steps={sorted(steps)})")
+        for c in wf_candidates[:10]:
+            lines.append(f"  - {c.method} {c.path} (step={c.workflow_step}, confidence={c.confidence:.2f})")
+
+    return "\n".join(lines)
+
+
+def generate_json_report(filtered: List[CandidateEndpoint], top: int, visited_urls: Optional[List[str]] = None) -> str:
+    workflow_map = group_workflows(filtered)
+    data: Dict[str, Any] = {
+        "candidates": [asdict(c) for c in filtered[:top]],
+        "workflows": {
+            wf_key: [asdict(c) for c in wf_candidates]
+            for wf_key, wf_candidates in workflow_map.items()
+        }
+    }
+    if visited_urls is not None:
+        data = {"visited_urls": visited_urls, **data}
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
+
+def generate_csv_report(filtered: List[CandidateEndpoint], top: int) -> str:
+    import io
+    group_workflows(filtered)
+    output = io.StringIO()
+    fieldnames = [
+        "method",
+        "path",
+        "url",
+        "state_changing",
+        "confidence",
+        "reasons",
+        "raw_event_index",
+        "workflow_key",
+        "workflow_step",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames)
+    writer.writeheader()
+    for c in filtered[:top]:
+        row = asdict(c)
+        row["reasons"] = "; ".join(row["reasons"])
+        writer.writerow(row)
+    return output.getvalue()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="State-changing endpoint analyzer")
     ap.add_argument("--input", required=True, help="Path to JSON traffic log")
     ap.add_argument("--top", type=int, default=30, help="Max candidates to output")
+    ap.add_argument("--output", "-o", help="Path to save the output file")
+    ap.add_argument("--format", "-f", choices=["text", "json", "csv"], help="Output format (default: auto-detect from output extension, or text if printing to console)")
     args = ap.parse_args()
 
     events = parse_input(args.input)
@@ -436,26 +512,39 @@ def main() -> None:
     filtered = [c for c in candidates if c.state_changing and c.confidence >= 0.45]
     filtered.sort(key=lambda x: (-x.confidence, x.raw_event_index))
 
-    # Output candidate list
-    print("=== Candidate state-changing endpoints (race-condition candidates) ===")
-    for c in filtered[: args.top]:
-        print(format_candidate(c))
-        print()
+    # Determine format
+    fmt = args.format
+    if not fmt and args.output:
+        ext = os.path.splitext(args.output)[1].lower()
+        if ext == ".json":
+            fmt = "json"
+        elif ext == ".csv":
+            fmt = "csv"
+        else:
+            fmt = "text"
+    elif not fmt:
+        fmt = "text"
 
-    # Workflow grouping
-    workflow_map = group_workflows(filtered)
-    print("=== Workflow grouping ===")
-    for wf_key, wf_candidates in workflow_map.items():
-        if not wf_candidates:
-            continue
-        # Highlight only workflows with at least 2 distinct steps
-        steps = {c.workflow_step for c in wf_candidates}
-        if wf_key == "unassigned" and len(wf_candidates) < 2:
-            continue
+    # Generate output
+    if fmt == "json":
+        report_content = generate_json_report(filtered, args.top)
+    elif fmt == "csv":
+        report_content = generate_csv_report(filtered, args.top)
+    else:
+        report_content = generate_text_report(filtered, args.top)
 
-        print(f"\n[{wf_key}] ({len(wf_candidates)} candidates; steps={sorted(steps)})")
-        for c in wf_candidates[:10]:
-            print(f"  - {c.method} {c.path} (step={c.workflow_step}, confidence={c.confidence:.2f})")
+    # Export to file if requested
+    if args.output:
+        out_dir = os.path.dirname(args.output)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(report_content)
+            if not report_content.endswith("\n"):
+                f.write("\n")
+        print(generate_text_report(filtered, args.top))
+    else:
+        print(report_content)
 
 
 if __name__ == "__main__":

@@ -97,6 +97,8 @@ CLI flags:
 
 - `--input` (required): path to the JSON traffic log
 - `--top` (default: `30`): max candidates to print
+- `--output` / `-o`: optional file path to save the output report
+- `--format` / `-f`: optional output format (`text`, `json`, or `csv`). If not set and `--output` is provided, it auto-detects from file extension. If neither is set, defaults to `text`.
 
 ---
 
@@ -147,9 +149,13 @@ CLI flags:
 - `--max-depth` (default: `3`): maximum crawl depth (relative to the starting page)
 - `--wait-ms` (default: `1200`): wait time after navigation for JS/XHR to fire
 - `--headless` (default: headed): run browser headlessly
-- `--cross-origin` (default: same-origin only): allow crawling outside the base origin
+- `--cross-origin` (default: off): if **not set**, the crawler only ranks endpoints whose response URLs are **same-origin** as `--base` (same scheme + same host/port).
+  - Same-origin check is performed in `enumerate_site.py` via `_same_origin(base_origin, url)`.
+  - When `--cross-origin` is set, responses from other origins (e.g., CDN, third-party auth, analytics) are also captured and passed through the same heuristic scoring.
 - `--rate-limit-delay` (default: `0.0`): optional delay between navigations (seconds)
 - `--top` (default: `30`): max ranked candidates to print
+- `--output` / `-o`: optional file path to save the output report
+- `--format` / `-f`: optional output format (`text`, `json`, or `csv`). If not set and `--output` is provided, it auto-detects from file extension. If neither is set, defaults to `text`.
 
 ### Notes / limitations (enumeration)
 

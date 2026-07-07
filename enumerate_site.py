@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
 from dataclasses import asdict
@@ -266,6 +267,8 @@ def main() -> None:
     ap.add_argument("--cross-origin", action="store_true", default=False, help="Allow crawling outside the base origin")
     ap.add_argument("--rate-limit-delay", type=float, default=0.0, help="Extra delay (seconds) between page navigations")
     ap.add_argument("--top", type=int, default=30, help="Max candidates to output")
+    ap.add_argument("--output", "-o", help="Path to save the output file")
+    ap.add_argument("--format", "-f", choices=["text", "json", "csv"], help="Output format (default: auto-detect from output extension, or text if printing to console)")
 
     args = ap.parse_args()
 
@@ -296,26 +299,39 @@ def main() -> None:
     filtered = [c for c in candidates if c.state_changing and c.confidence >= 0.45]
     filtered.sort(key=lambda x: (-x.confidence, x.raw_event_index))
 
-    print("=== Enumerated URLs (crawl order) ===")
-    for u in visited:
-        print(u)
+    # Determine format
+    fmt = args.format
+    if not fmt and args.output:
+        ext = os.path.splitext(args.output)[1].lower()
+        if ext == ".json":
+            fmt = "json"
+        elif ext == ".csv":
+            fmt = "csv"
+        else:
+            fmt = "text"
+    elif not fmt:
+        fmt = "text"
 
-    print("\n=== Candidate state-changing endpoints (ranked) ===")
-    for c in filtered[: args.top]:
-        print(todo_analyzer.format_candidate(c))
-        print()
+    # Generate output
+    if fmt == "json":
+        report_content = todo_analyzer.generate_json_report(filtered, args.top, visited)
+    elif fmt == "csv":
+        report_content = todo_analyzer.generate_csv_report(filtered, args.top)
+    else:
+        report_content = todo_analyzer.generate_text_report(filtered, args.top, visited)
 
-    workflow_map = todo_analyzer.group_workflows(filtered)
-    print("=== Workflow grouping ===")
-    for wf_key, wf_candidates in workflow_map.items():
-        if not wf_candidates:
-            continue
-        steps = {c.workflow_step for c in wf_candidates}
-        if wf_key == "unassigned" and len(wf_candidates) < 2:
-            continue
-        print(f"\n[{wf_key}] ({len(wf_candidates)} candidates; steps={sorted(steps)})")
-        for c in wf_candidates[:10]:
-            print(f"  - {c.method} {c.path} (step={c.workflow_step}, confidence={c.confidence:.2f})")
+    # Export to file if requested
+    if args.output:
+        out_dir = os.path.dirname(args.output)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(report_content)
+            if not report_content.endswith("\n"):
+                f.write("\n")
+        print(todo_analyzer.generate_text_report(filtered, args.top, visited))
+    else:
+        print(report_content)
 
 
 if __name__ == "__main__":
