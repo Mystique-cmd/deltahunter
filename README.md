@@ -11,6 +11,52 @@ This repository contains two scripts:
 
 ---
 
+## ## Setup
+
+## Create the virtual environment (do this ONCE)
+
+```text
+python3 -m venv venv
+```
+
+## Activate it
+
+## Windows
+
+```text
+venv\Scripts\activate
+```
+
+## Mac / Linux
+
+```text
+source venv/bin/activate
+```
+
+## Install all dependencies
+
+```text
+pip install -r requirements.txt
+```
+
+### Requirements
+
+- Python 3.x
+- Playwright
+
+Install Playwright:
+
+```bash
+pip install playwright
+playwright install
+```
+
+### Run
+
+```bash
+python3 enumerate_site.py --base https://example.com --max-pages 30 --max-depth 3
+```
+
 ## What `todo_analyzer.py` does
 
 `todo_analyzer.py` parses JSON “events” and scores each event for how likely it is to be **state-changing** based on:
@@ -36,20 +82,20 @@ The scripts are designed to be defensive: log formats vary, so keys are matched 
 
 The input JSON can be either:
 
-1) **A JSON array** of events
+1. **A JSON array** of events
 
 ```json
 [
   {
     "method": "POST",
     "url": "https://example.com/redeem",
-    "body": {"coupon": "X"},
-    "response": {"status": 200, "body": "created new_id"}
+    "body": { "coupon": "X" },
+    "response": { "status": 200, "body": "created new_id" }
   }
 ]
 ```
 
-2) **A JSON object** containing an `events` array
+2. **A JSON object** containing an `events` array
 
 ```json
 {
@@ -57,9 +103,9 @@ The input JSON can be either:
     {
       "method": "POST",
       "path": "/redeem-coupon",
-      "request_body": {"coupon": "X"},
+      "request_body": { "coupon": "X" },
       "response_status": 200,
-      "response_body": {"body": "created"}
+      "response_body": { "body": "created" }
     }
   ]
 }
@@ -124,24 +170,6 @@ The script prints two main sections:
 
 `enumerate_site.py` crawls pages using Playwright (to capture JS-driven navigation/XHR), listens for network requests/responses, converts captured traffic into the event schema expected by `todo_analyzer.py`, and prints ranked candidates + workflow grouping.
 
-### Requirements
-
-- Python 3.x
-- Playwright
-
-Install Playwright:
-
-```bash
-pip install playwright
-playwright install
-```
-
-### Run
-
-```bash
-python3 enumerate_site.py --base https://example.com --max-pages 30 --max-depth 3
-```
-
 CLI flags:
 
 - `--base` (required): base URL to start crawling from
@@ -186,4 +214,3 @@ CLI flags:
 Operate only on systems where you have explicit authorization.
 
 These scripts may produce false positives and should never be treated as definitive proof of behavior.
-
