@@ -27,9 +27,11 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
+
 
 # todo_analyzer provides the scoring + workflow grouping logic.
 import todo_analyzer
@@ -66,8 +68,9 @@ async def _crawl(
     headless: bool,
     allow_cross_origin: bool,
     rate_limit_delay: float,
-) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Returns (events, visited_urls)."""
+) -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, Any]]]:
+    """Returns (events, visited_urls, har_entries)."""
+
 
     try:
         from playwright.async_api import async_playwright
@@ -94,22 +97,31 @@ async def _crawl(
 
         page = await context.new_page()
 
+        # HAR capture (best-effort). We capture everything during crawl; endpoint ranking remains unchanged.
+        # We'll pair request/response entries using a key that is likely stable enough for this heuristic tool.
+        har_entries: List[Dict[str, Any]] = []
+        har_start_by_key: Dict[str, float] = {}
+        har_req_by_key: Dict[str, Dict[str, Any]] = {}
+        har_resp_by_key_queue: Dict[str, List[Dict[str, Any]]] = {}
+
+        # Cap stored response bodies for HAR as well
+        HAR_MAX_RESPONSE_BODY_CHARS = 20000
+
         async def handle_request(req):
-            # Capture request details. We'll attach response later in handle_response.
-            # NOTE: Avoid Playwright internal fields (e.g. req._impl_obj._requestId)
-            # because they vary across Playwright versions.
             try:
                 url = req.url
                 method = req.method
                 post_data = req.post_data
                 ct = req.headers.get("content-type", "")
 
-
                 key = f"{method} {url}"
+
+                # Capture for endpoint analyzer
                 body_obj: Any = None
                 if post_data:
-                    # Try JSON parse
-                    if "application/json" in ct.lower() or (post_data.strip().startswith("{") or post_data.strip().startswith("[")):
+                    if "application/json" in ct.lower() or (
+                        post_data.strip().startswith("{") or post_data.strip().startswith("[")
+                    ):
                         try:
                             body_obj = json.loads(post_data)
                         except Exception:
@@ -118,8 +130,43 @@ async def _crawl(
                         body_obj = post_data
 
                 if body_obj is not None:
-                    # append to queue for later association
                     req_body_by_id.setdefault(key, []).append(body_obj)
+
+                # Capture for HAR
+                har_start_by_key[key] = time.time()
+
+                # Playwright headers are already case-normalized but we'll keep as-is.
+                # Ensure plain dict for JSON serialization.
+                req_headers = dict(req.headers) if hasattr(req, "headers") else {}
+
+                query_string: List[Dict[str, str]] = []
+                try:
+                    parsed = urlparse(url)
+                    qs = parsed.query
+                    if qs:
+                        for part in qs.split("&"):
+                            if "=" in part:
+                                k, v = part.split("=", 1)
+                            else:
+                                k, v = part, ""
+                            query_string.append({"name": k, "value": v})
+                except Exception:
+                    pass
+
+                har_req_by_key[key] = {
+                    "method": method,
+                    "url": url,
+                    "headers": [{"name": k, "value": str(v)} for k, v in req_headers.items()],
+                    "queryString": query_string,
+                    "postData": None,
+                }
+
+                if post_data is not None:
+                    # For HAR, preserve postData as text (best-effort)
+                    har_req_by_key[key]["postData"] = {
+                        "mimeType": ct,
+                        "text": post_data,
+                    }
             except Exception:
                 return
 
@@ -130,43 +177,103 @@ async def _crawl(
                 url = resp.url
                 status = resp.status
 
-                # Only consider same-origin by default for endpoint ranking.
-                if not allow_cross_origin and not _same_origin(base_origin, url):
-                    return
-
-                path = urlparse(url).path
                 key = f"{method} {url}"
 
-                # Best-effort: response body can be large; limit size.
+                # Best-effort response body capture for HAR
                 body_text: Any = None
                 try:
-                    # Only attempt text for small-ish responses
-                    # (Playwright doesn't give size until reading)
                     txt = await resp.text()
                     if txt is not None:
-                        body_text = txt[:5000]
+                        body_text = txt[:HAR_MAX_RESPONSE_BODY_CHARS]
                 except Exception:
                     body_text = None
 
-                # Best-effort request body association
+                # Best-effort request body association for endpoint analyzer
+                path = urlparse(url).path
                 request_body: Any = None
                 if key in req_body_by_id and req_body_by_id[key]:
                     request_body = req_body_by_id[key].pop(0)
 
-                events.append(
-                    {
-                        "method": method,
-                        "url": url,
-                        "path": path,
-                        "request_body": request_body,
-                        "response": {"status": status, "body": body_text},
-                    }
-                )
+                # Only consider same-origin by default for endpoint ranking.
+                if not allow_cross_origin and not _same_origin(base_origin, url):
+                    # Skip endpoint analyzer event when same-origin filtering is enabled.
+                    pass
+                else:
+                    events.append(
+                        {
+                            "method": method,
+                            "url": url,
+                            "path": path,
+                            "request_body": request_body,
+                            "response": {"status": status, "body": body_text},
+                        }
+                    )
+
+
+                # Build HAR entry
+                req_info = har_req_by_key.get(key)
+                start_ts = har_start_by_key.get(key, None)
+
+                # duration in ms
+                duration_ms = None
+                if start_ts is not None:
+                    duration_ms = max(0.0, (time.time() - start_ts) * 1000.0)
+
+                try:
+                    resp_headers = dict(resp.headers)
+                except Exception:
+                    resp_headers = {}
+
+                response_obj = {
+                    "status": int(status),
+                    "statusText": "",
+                    "httpVersion": "",
+                    "headers": [{"name": k, "value": str(v)} for k, v in resp_headers.items()],
+                    "content": {
+                        "size": len(body_text) if isinstance(body_text, str) else 0,
+                        "mimeType": (resp_headers.get("content-type") or ""),
+                        "text": body_text if isinstance(body_text, str) else "",
+                    },
+                }
+
+                # startedDateTime per HAR entry; use request timestamp if available
+                started = None
+                if start_ts is not None:
+                    started = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(start_ts)) + (
+                        ".%03dZ" % int((start_ts - int(start_ts)) * 1000)
+                    )
+                else:
+                    # fallback
+                    started = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + (
+                        ".000Z"
+                    )
+
+                if req_info:
+                    har_entries.append(
+                        {
+                            "startedDateTime": started,
+                            "time": duration_ms if duration_ms is not None else 0,
+                            "request": {
+                                "method": req_info["method"],
+                                "url": req_info["url"],
+                                "httpVersion": "",
+                                "headers": req_info["headers"],
+                                "queryString": req_info["queryString"],
+                                "postData": req_info.get("postData"),
+                            },
+                            "response": response_obj,
+                            "cache": {},
+                            "timings": {},
+                            "serverIPAddress": "",
+                            "connection": "",
+                        }
+                    )
             except Exception:
                 return
 
         context.on("request", lambda req: asyncio.create_task(handle_request(req)))
         context.on("response", lambda resp: asyncio.create_task(handle_response(resp)))
+
 
         async def extract_links_and_forms(current_url: str) -> List[str]:
             # Extract anchor hrefs + form actions + script src navigations.
@@ -254,7 +361,8 @@ async def _crawl(
         await context.close()
         await browser.close()
 
-    return events, discovered_order
+    return events, discovered_order, har_entries
+
 
 
 def main() -> None:
@@ -270,12 +378,19 @@ def main() -> None:
     ap.add_argument("--output", "-o", help="Path to save the output file")
     ap.add_argument("--format", "-f", choices=["text", "json", "csv"], help="Output format (default: auto-detect from output extension, or text if printing to console)")
 
+    ap.add_argument(
+        "--har-output",
+        "-H",
+        help="Optional path to write an autogenerated HAR (HTTP Archive) capturing requests/responses during crawl",
+    )
+
+
     args = ap.parse_args()
 
     base = args.base
 
     # Run crawler
-    events, visited = asyncio.run(
+    crawl_result = asyncio.run(
         _crawl(
             base_url=base,
             max_pages=args.max_pages,
@@ -286,6 +401,9 @@ def main() -> None:
             rate_limit_delay=args.rate_limit_delay,
         )
     )
+
+    events, visited, har_entries = crawl_result
+
 
     # Reuse todo_analyzer scoring
     candidates: List[todo_analyzer.CandidateEndpoint] = []
