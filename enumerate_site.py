@@ -451,7 +451,28 @@ def main() -> None:
     else:
         print(report_content)
 
+    # Optional HAR export
+    if args.har_output:
+        out_dir = os.path.dirname(args.har_output)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+        # Minimal HAR structure (enough for most HAR viewers)
+        har_doc: Dict[str, Any] = {
+            "log": {
+                "version": "1.2",
+                "creator": {"name": "enumerate_site.py", "version": "1.0"},
+                "entries": har_entries,
+            }
+        }
+
+        with open(args.har_output, "w", encoding="utf-8") as f:
+            json.dump(har_doc, f, ensure_ascii=False, indent=2)
+
+        print(f"HAR written to: {args.har_output}")
+
 
 if __name__ == "__main__":
     main()
+
 
