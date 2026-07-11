@@ -13,28 +13,28 @@ This repository contains two scripts:
 
 ## Setup
 
-## Create the virtual environment (do this ONCE)
+### Create the virtual environment (do this ONCE)
 
 
 ```bash
 python3 -m venv venv
 ```
 
-## Activate it
+### Activate it
 
-## Windows
+### Windows
 
 ```text
 venv\Scripts\activate
 ```
 
-## Mac / Linux
+### Mac / Linux
 
 ```bash
 source venv/bin/activate
 ```
 
-## Install all dependencies
+### Install all dependencies
 
 ```bash
 pip install -r requirements.txt
